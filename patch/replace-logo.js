@@ -10,6 +10,11 @@
         } catch (e) { return false; }
     }
 
+    function isMadboxSrc(src) {
+        if (!src) return false;
+        try { return /madbox/i.test(src.toLowerCase()); } catch(e) { return false; }
+    }
+
     function drawFlybound(ctx, x, y, w, h) {
         try {
             const prevFill = ctx.fillStyle;
@@ -42,22 +47,28 @@
         try {
             const args = Array.from(arguments);
             const img = args[0];
-            if (img && img.src && isTitleSrc(img.src)) {
-                // Determine destination coords
-                // drawImage(img, dx, dy) -> args length 3
-                // drawImage(img, dx, dy, dw, dh) -> length 5
-                // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh) -> length 9 (we ignore source rect)
-                let dx = 0, dy = 0, dw = img.width || 200, dh = img.height || 60;
-                if (args.length === 3) {
-                    dx = args[1]; dy = args[2]; dw = img.width; dh = img.height;
-                } else if (args.length === 5) {
-                    dx = args[1]; dy = args[2]; dw = args[3]; dh = args[4];
-                } else if (args.length === 9) {
-                    dx = args[5]; dy = args[6]; dw = args[7]; dh = args[8];
+            if (img && img.src) {
+                if (isMadboxSrc(img.src)) {
+                    // Skip drawing Madbox splash graphics entirely
+                    return;
                 }
-                // Draw Flybound text instead of image
-                drawFlybound(this, dx, dy - (dh*0.15), dw, dh*1.2);
-                return; // skip original draw
+                if (isTitleSrc(img.src)) {
+                    // Determine destination coords
+                    // drawImage(img, dx, dy) -> args length 3
+                    // drawImage(img, dx, dy, dw, dh) -> length 5
+                    // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh) -> length 9 (we ignore source rect)
+                    let dx = 0, dy = 0, dw = img.width || 200, dh = img.height || 60;
+                    if (args.length === 3) {
+                        dx = args[1]; dy = args[2]; dw = img.width; dh = img.height;
+                    } else if (args.length === 5) {
+                        dx = args[1]; dy = args[2]; dw = args[3]; dh = args[4];
+                    } else if (args.length === 9) {
+                        dx = args[5]; dy = args[6]; dw = args[7]; dh = args[8];
+                    }
+                    // Draw Flybound text instead of image
+                    drawFlybound(this, dx, dy - (dh*0.15), dw, dh*1.2);
+                    return; // skip original draw
+                }
             }
         } catch (e) {
             // if anything fails, fallback to original

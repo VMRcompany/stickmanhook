@@ -17,13 +17,8 @@
 
     function drawFlybound(ctx, x, y, w, h) {
         try {
-            const prevFill = ctx.fillStyle;
-            const prevStroke = ctx.strokeStyle;
-            const prevShadow = ctx.shadowColor;
-            const prevFont = ctx.font;
             ctx.save();
-            // style similar to existing logo: bold, white with dark shadow
-            const size = Math.max((h|| (ctx.canvas.height * 0.08)), Math.min(ctx.canvas.width * 0.12, 120));
+            const size = Math.max((h || (ctx.canvas.height * 0.08)), Math.min(ctx.canvas.width * 0.12, 120));
             ctx.font = `bold ${Math.round(size)}px "Arial Black", "Impact", sans-serif`;
             ctx.fillStyle = '#FFFFFF';
             ctx.shadowColor = 'rgba(0,0,0,0.6)';
@@ -32,9 +27,9 @@
             ctx.textBaseline = 'top';
             const tx = x + (w ? w/2 : 0);
             const ty = y;
-            // stroke for dark outline
             ctx.lineWidth = Math.max(6, Math.round(size * 0.08));
             ctx.strokeStyle = '#222';
+            // Draw outline + fill
             ctx.strokeText('Flybound', tx, ty);
             ctx.fillText('Flybound', tx, ty);
             ctx.restore();
@@ -48,15 +43,12 @@
             const args = Array.from(arguments);
             const img = args[0];
             if (img && img.src) {
+                // If this is Madbox splash, skip drawing it entirely
                 if (isMadboxSrc(img.src)) {
-                    // Skip drawing Madbox splash graphics entirely
-                    return;
+                    return; // do not draw Madbox startup splash
                 }
+                // If this looks like a title image, draw Flybound text instead
                 if (isTitleSrc(img.src)) {
-                    // Determine destination coords
-                    // drawImage(img, dx, dy) -> args length 3
-                    // drawImage(img, dx, dy, dw, dh) -> length 5
-                    // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh) -> length 9 (we ignore source rect)
                     let dx = 0, dy = 0, dw = img.width || 200, dh = img.height || 60;
                     if (args.length === 3) {
                         dx = args[1]; dy = args[2]; dw = img.width; dh = img.height;
@@ -65,30 +57,49 @@
                     } else if (args.length === 9) {
                         dx = args[5]; dy = args[6]; dw = args[7]; dh = args[8];
                     }
-                    // Draw Flybound text instead of image
                     drawFlybound(this, dx, dy - (dh*0.15), dw, dh*1.2);
                     return; // skip original draw
                 }
             }
         } catch (e) {
-            // if anything fails, fallback to original
+            // fallthrough to original
         }
         return originalDrawImage.apply(this, arguments);
     };
 
-    // Also intercept fillText so if game writes "Stickman Hook" as text we replace it
+    // Intercept fillText and strokeText to replace titles and hide loading text
     const originalFillText = CanvasRenderingContext2D.prototype.fillText;
+    const originalStrokeText = CanvasRenderingContext2D.prototype.strokeText;
+
+    function shouldReplaceText(text) {
+        if (!text || typeof text !== 'string') return false;
+        const t = text.trim();
+        if (!t) return false;
+        if (/loading/i.test(t)) return 'hide';
+        if (/stickman/i.test(t) || /hook/i.test(t) || /title/i.test(t)) return 'flybound';
+        return false;
+    }
+
     CanvasRenderingContext2D.prototype.fillText = function(text, x, y) {
         try {
-            if (typeof text === 'string' && /stickman/i.test(text) && /hook/i.test(text)) {
-                return originalFillText.apply(this, ['Flybound', x, y]);
-            }
-            if (typeof text === 'string' && /stickman|hook/i.test(text)) {
-                // partial matches -> replace whole string
+            const action = shouldReplaceText(text);
+            if (action === 'hide') return; // do not render loading text
+            if (action === 'flybound') {
                 return originalFillText.apply(this, ['Flybound', x, y]);
             }
         } catch (e) {}
         return originalFillText.apply(this, arguments);
+    };
+
+    CanvasRenderingContext2D.prototype.strokeText = function(text, x, y) {
+        try {
+            const action = shouldReplaceText(text);
+            if (action === 'hide') return; // do not render loading
+            if (action === 'flybound') {
+                return originalStrokeText.apply(this, ['Flybound', x, y]);
+            }
+        } catch (e) {}
+        return originalStrokeText.apply(this, arguments);
     };
 
     // Fallback overlay if canvas-based interception doesn't catch something
@@ -136,7 +147,7 @@
             else if (overlay) overlay.style.display='none';
         });
         mo.observe(document.body, {childList:true, subtree:true});
-        window.addEventListener('load', function(){ setTimeout(function(){ const c = document.querySelector('canvas'); if(c){ ensureOverlay(); adjustOverlay(); } }, 250);});
+        window.addEventListener('load', function(){ setTimeout(function(){ const c = document.querySelector('canvas'); if(c){ ensureOverlay(); adjustOverlay(); } }, 50);});
     })();
 
 })();

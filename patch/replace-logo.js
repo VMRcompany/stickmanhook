@@ -1,6 +1,27 @@
-// Replace Stickman Hook logo with Flybound text by intercepting draws and text.
+// Replace Stickman Hook logo with Flybound text only on the menu screens.
+// Strategy:
+// - Intercept CanvasRenderingContext2D.drawImage / fillText / strokeText
+// - Detect title draws by destination coordinates (top area of canvas) and by filename patterns
+// - When a title draw is detected, SKIP the original draw and render "Flybound" instead
+// - Track `menuVisible` state so the replacement only occurs on the menu/title screens (not during gameplay)
+
 (function() {
-    const TITLE_PATTERNS = [/title/i, /stickman/i, /hook/i, /titlepow2/i];
+    // Tunable thresholds (fraction of canvas)
+    const TITLE_TOP_THRESHOLD = 0.30;    // y <= 30% of canvas height -> considered top/title area
+    const MIN_TITLE_WIDTH_FRAC = 0.20;    // width >= 20% of canvas width
+    const MIN_TITLE_HEIGHT_FRAC = 0.06;   // height >= 6% of canvas height
+
+    function looksLikeTitleDraw(ctx, dx, dy, dw, dh) {
+        try {
+            const ch = ctx.canvas.height || 1;
+            const cw = ctx.canvas.width || 1;
+            if (typeof dy !== 'number' || typeof dh !== 'number') return false;
+            // If destination Y is near the top and size is reasonable for a title image
+            return dy <= ch * TITLE_TOP_THRESHOLD && dw >= cw * MIN_TITLE_WIDTH_FRAC && dh >= ch * MIN_TITLE_HEIGHT_FRAC;
+        } catch (e) {
+            return false;
+        }
+    }
 
     function isTitleSrc(src) {
         if (!src) return false;
@@ -15,77 +36,111 @@
         try { return /madbox/i.test(src.toLowerCase()); } catch(e) { return false; }
     }
 
-    function drawFlybound(ctx, x, y, w, h) {
+    function drawFlybound(ctx, dx, dy, dw, dh) {
         try {
             ctx.save();
-            const size = Math.max((h || (ctx.canvas.height * 0.08)), Math.min(ctx.canvas.width * 0.12, 120));
-            ctx.font = `bold ${Math.round(size)}px "Arial Black", "Impact", sans-serif`;
+            // Compute font size relative to destination height if available, otherwise canvas
+            const ch = ctx.canvas.height || 600;
+            const cw = ctx.canvas.width || 800;
+            const size = Math.max(Math.min((dh || ch * 0.12), cw * 0.12), 28);
+            ctx.font = `900 ${Math.round(size)}px "Arial Black", "Impact", sans-serif`;
             ctx.fillStyle = '#FFFFFF';
             ctx.shadowColor = 'rgba(0,0,0,0.6)';
-            ctx.shadowBlur = 6;
+            ctx.shadowBlur = Math.max(2, Math.round(size * 0.06));
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            const tx = x + (w ? w/2 : 0);
-            const ty = y;
-            ctx.lineWidth = Math.max(6, Math.round(size * 0.08));
-            ctx.strokeStyle = '#222';
-            // Draw outline + fill
+            const tx = dx + (dw ? dw/2 : (cw/2));
+            const ty = dy;
+            ctx.lineWidth = Math.max(4, Math.round(size * 0.08));
+            ctx.strokeStyle = '#111';
             ctx.strokeText('Flybound', tx, ty);
             ctx.fillText('Flybound', tx, ty);
             ctx.restore();
         } catch (e) {}
     }
 
-    // Hook drawImage to intercept when title images are drawn
+    // track whether we're currently showing a menu title; used to avoid replacing text in gameplay
+    let menuVisible = false;
+    let menuVisibleLastSeenAt = 0;
+    const MENU_HIDE_TIMEOUT = 1500; // ms after last title draw consider menu hidden
+
+    function markMenuSeen() {
+        menuVisible = true;
+        menuVisibleLastSeenAt = Date.now();
+    }
+
+    function maybeHideMenu() {
+        if (menuVisible && (Date.now() - menuVisibleLastSeenAt > MENU_HIDE_TIMEOUT)) {
+            menuVisible = false;
+        }
+    }
+
+    // --- drawImage interception ---
     const originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
     CanvasRenderingContext2D.prototype.drawImage = function() {
         try {
             const args = Array.from(arguments);
             const img = args[0];
-            if (img && img.src) {
-                // If this is Madbox splash, skip drawing it entirely
-                if (isMadboxSrc(img.src)) {
-                    return; // do not draw Madbox startup splash
-                }
-                // If this looks like a title image, draw Flybound text instead
-                if (isTitleSrc(img.src)) {
-                    let dx = 0, dy = 0, dw = img.width || 200, dh = img.height || 60;
-                    if (args.length === 3) {
-                        dx = args[1]; dy = args[2]; dw = img.width; dh = img.height;
-                    } else if (args.length === 5) {
-                        dx = args[1]; dy = args[2]; dw = args[3]; dh = args[4];
-                    } else if (args.length === 9) {
-                        dx = args[5]; dy = args[6]; dw = args[7]; dh = args[8];
-                    }
-                    drawFlybound(this, dx, dy - (dh*0.15), dw, dh*1.2);
-                    return; // skip original draw
-                }
+            // If image source indicates Madbox splash, skip drawing it entirely
+            if (img && img.src && isMadboxSrc(img.src)) {
+                // treat as menu presence so overlay can appear if needed, but don't draw
+                markMenuSeen();
+                return;
             }
+
+            // Extract destination coordinates/dimensions regardless of overload
+            let dx = 0, dy = 0, dw = 0, dh = 0;
+            if (args.length === 3) {
+                dx = args[1]; dy = args[2]; dw = img && img.width || 0; dh = img && img.height || 0;
+            } else if (args.length === 5) {
+                dx = args[1]; dy = args[2]; dw = args[3]; dh = args[4];
+            } else if (args.length === 9) {
+                // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+                dx = args[5]; dy = args[6]; dw = args[7]; dh = args[8];
+            }
+
+            // If the destination rectangle is near the top and looks like title -> replace
+            if (looksLikeTitleDraw(this, dx, dy, dw, dh) || (img && img.src && isTitleSrc(img.src))) {
+                // Only show Flybound on menu screens; mark that we saw a title draw
+                markMenuSeen();
+                // Draw Flybound in the same area and skip the original draw
+                drawFlybound(this, dx, dy, dw, dh);
+                return; // do not call original drawImage
+            }
+
+            // If not title/madbox, proceed normally
         } catch (e) {
-            // fallthrough to original
+            // on error, fallback to original draw
         }
         return originalDrawImage.apply(this, arguments);
     };
 
-    // Intercept fillText and strokeText to replace titles and hide loading text
+    // --- text interception (fillText/strokeText) ---
     const originalFillText = CanvasRenderingContext2D.prototype.fillText;
     const originalStrokeText = CanvasRenderingContext2D.prototype.strokeText;
 
-    function shouldReplaceText(text) {
-        if (!text || typeof text !== 'string') return false;
-        const t = text.trim();
-        if (!t) return false;
-        if (/loading/i.test(t)) return 'hide';
-        if (/stickman/i.test(t) || /hook/i.test(t) || /title/i.test(t)) return 'flybound';
-        return false;
+    function shouldHandleCanvasText(text, y, ctx) {
+        // If we're in menuVisible state or text is drawn near top, consider it a title/loading text
+        try {
+            const ch = ctx.canvas.height || 600;
+            const top = (typeof y === 'number') ? (y <= ch * TITLE_TOP_THRESHOLD) : false;
+            if (/loading/i.test(String(text))) return 'hide';
+            if (top || menuVisible) {
+                if (/stickman|hook|title/i.test(String(text))) return 'flybound';
+            }
+            return false;
+        } catch (e) { return false; }
     }
 
     CanvasRenderingContext2D.prototype.fillText = function(text, x, y) {
         try {
-            const action = shouldReplaceText(text);
+            const action = shouldHandleCanvasText(text, y, this);
             if (action === 'hide') return; // do not render loading text
             if (action === 'flybound') {
-                return originalFillText.apply(this, ['Flybound', x, y]);
+                // mark menu and draw Flybound instead
+                markMenuSeen();
+                drawFlybound(this, x - (this.canvas.width * 0.25), y, this.canvas.width * 0.5, this.canvas.height * 0.12);
+                return;
             }
         } catch (e) {}
         return originalFillText.apply(this, arguments);
@@ -93,17 +148,19 @@
 
     CanvasRenderingContext2D.prototype.strokeText = function(text, x, y) {
         try {
-            const action = shouldReplaceText(text);
-            if (action === 'hide') return; // do not render loading
+            const action = shouldHandleCanvasText(text, y, this);
+            if (action === 'hide') return;
             if (action === 'flybound') {
-                return originalStrokeText.apply(this, ['Flybound', x, y]);
+                markMenuSeen();
+                drawFlybound(this, x - (this.canvas.width * 0.25), y, this.canvas.width * 0.5, this.canvas.height * 0.12);
+                return;
             }
         } catch (e) {}
         return originalStrokeText.apply(this, arguments);
     };
 
-    // Fallback overlay if canvas-based interception doesn't catch something
-    (function addOverlay() {
+    // --- lightweight overlay only as a fallback, and only while menuVisible ---
+    (function overlayManager() {
         const style = document.createElement('style');
         style.textContent = `
         .flybound-logo-overlay {
@@ -120,34 +177,27 @@
             pointer-events: none;
             z-index: 9999;
             white-space: nowrap;
+            display: none;
         }
         `;
         document.head.appendChild(style);
-        let overlay = null;
-        function ensureOverlay() {
-            if (!overlay) {
-                overlay = document.createElement('div');
-                overlay.className = 'flybound-logo-overlay';
-                overlay.innerText = 'Flybound';
-                document.body.appendChild(overlay);
+        const overlay = document.createElement('div');
+        overlay.className = 'flybound-logo-overlay';
+        overlay.innerText = 'Flybound';
+        document.body.appendChild(overlay);
+
+        function updateOverlayVisibility() {
+            maybeHideMenu();
+            if (menuVisible) {
+                overlay.style.display = 'block';
+            } else {
+                overlay.style.display = 'none';
             }
         }
-        function adjustOverlay() {
-            if (!overlay) return;
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-            const base = Math.max(Math.min(w / 10, h / 6), 24);
-            overlay.style.fontSize = Math.round(base) + 'px';
-            overlay.style.top = Math.round(h * 0.06) + 'px';
-        }
-        window.addEventListener('resize', adjustOverlay);
-        const mo = new MutationObserver(function() {
-            const canvas = document.querySelector('canvas');
-            if (canvas) { ensureOverlay(); adjustOverlay(); overlay.style.display='block'; }
-            else if (overlay) overlay.style.display='none';
-        });
-        mo.observe(document.body, {childList:true, subtree:true});
-        window.addEventListener('load', function(){ setTimeout(function(){ const c = document.querySelector('canvas'); if(c){ ensureOverlay(); adjustOverlay(); } }, 50);});
+
+        // periodically check menuVisible and adjust overlay
+        setInterval(updateOverlayVisibility, 300);
+
     })();
 
 })();
